@@ -623,8 +623,9 @@ async function ensureIndiaMap() {
     return null;
   }
   const urls = [
-    "https://cdn.jsdelivr.net/gh/geohacker/india@master/state/india_state.geojson",
-    "https://raw.githubusercontent.com/geohacker/india/master/state/india_state.geojson"
+    // Current State/UT boundaries. The earlier geohacker source did not separate Telangana.
+    "https://cdn.jsdelivr.net/gh/udit-001/india-maps-data@main/geojson/india.geojson",
+    "https://raw.githubusercontent.com/udit-001/india-maps-data/main/geojson/india.geojson"
   ];
   for (const url of urls) {
     try {
@@ -632,6 +633,9 @@ async function ensureIndiaMap() {
       if (!res.ok) continue;
       const geo = await res.json();
       if (geo && geo.features && geo.features.length) {
+        const names = new Set(geo.features.map(geoStateName).filter(Boolean));
+        // Reject outdated boundary files that still merge Telangana with Andhra Pradesh.
+        if (!names.has("Telangana")) continue;
         state.geojson = geo;
         return geo;
       }
@@ -639,7 +643,7 @@ async function ensureIndiaMap() {
       // Try the next source.
     }
   }
-  clearMap("Could not load the India map. The chat still works.");
+  clearMap("Could not load the current India State/UT map. The chat still works.");
   return null;
 }
 
@@ -650,13 +654,22 @@ function clearMap(message) {
 
 function geoStateName(feature) {
   const p = feature.properties || {};
-  const raw = p.ST_NM || p.NAME_1 || p.name || p.NAME || p.state || p.State_Name || p.ST_NAME || p.DISTRICT || "";
-  let name = String(raw).replace(/^State of\s+/i, "").replace(/^NCT of\s+/i, "NCT of ").trim();
-  name = normalizeStateName(name);
-  // GeoJSON sources use different spellings for some UT/state labels.
-  if (name === "Delhi") return "Delhi";
-  if (name === "Odisha") return "Odisha";
-  return name;
+  const candidateKeys = [
+    "ST_NM", "st_nm", "STATE", "state", "State", "STATE_NAME", "state_name",
+    "State_Name", "ST_NAME", "st_name", "NAME_1", "name_1", "NAME", "name",
+    "Name", "dtname", "DISTRICT"
+  ];
+  for (const key of candidateKeys) {
+    if (p[key] == null) continue;
+    const name = normalizeStateName(String(p[key]).replace(/^State of\s+/i, "").trim());
+    if (VALID_STATES.has(name)) return name;
+  }
+  for (const value of Object.values(p)) {
+    if (value == null) continue;
+    const name = normalizeStateName(String(value).replace(/^State of\s+/i, "").trim());
+    if (VALID_STATES.has(name)) return name;
+  }
+  return "";
 }
 
 function selectedFyRows() {
