@@ -131,6 +131,101 @@ function candidateFyTabs() {
   return out;
 }
 
+function textKey(value) {
+  return String(value ?? "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function metricKey(value) {
+  return textKey(value)
+    .replace(/₹/g, "rs")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function detectStateColumn(rows) {
+  const maxCols = Math.min(14, Math.max(...rows.map(r => r.length), 0));
+  let bestCol = 0;
+  let bestCount = -1;
+  for (let c = 0; c < maxCols; c += 1) {
+    let count = 0;
+    for (const row of rows) {
+      const st = normalizeStateName(row[c]);
+      if (VALID_STATES.has(st)) count += 1;
+    }
+    if (count > bestCount) {
+      bestCount = count;
+      bestCol = c;
+    }
+  }
+  return { col: bestCol, count: bestCount };
+}
+
+function findFirstDataRow(rows, stateCol) {
+  const idx = rows.findIndex(row => VALID_STATES.has(normalizeStateName(row[stateCol])));
+  return idx >= 0 ? idx : 0;
+}
+
+function headerTextForColumn(rows, dataStart, col) {
+  const headerStart = Math.max(0, dataStart - 6);
+  const headerEnd = Math.min(rows.length, dataStart + 1);
+  const parts = [];
+  let carriedMetric = "";
+
+  for (let r = headerStart; r < headerEnd; r += 1) {
+    const row = rows[r] || [];
+    const raw = String(row[col] ?? "").trim();
+    const rowText = metricKey(row.join(" "));
+
+    // For two-level headers with merged cells, Google often returns the metric name
+    // only once. Carry SDF/WMA/OD across the neighbouring Avg/Days columns.
+    for (let c = 0; c <= col; c += 1) {
+      const k = metricKey(row[c]);
+      if (/\bsdf\b/.test(k)) carriedMetric = "sdf";
+      else if (/\bwma\b/.test(k)) carriedMetric = "wma";
+      else if (/\bod\b|overdraft/.test(k)) carriedMetric = "od";
+      else if (/\btotal\b/.test(k)) carriedMetric = "total";
+      else if (k && !/(avg|average|days|rs|cr|crore)/.test(k)) carriedMetric = "";
+    }
+
+    if (raw) parts.push(raw);
+    const own = metricKey(raw);
+    if (carriedMetric && /(avg|average|days|rs|cr|crore|amount)/.test(own || rowText)) parts.push(carriedMetric);
+  }
+  return metricKey(parts.join(" "));
+}
+
+function detectMetricColumns(rows, stateCol, dataStart) {
+  const maxCols = Math.max(...rows.map(r => r.length), 0);
+  const labels = Array.from({ length: maxCols }, (_, c) => headerTextForColumn(rows, dataStart, c));
+
+  const findCol = (metric, kind) => {
+    const aliases = metric === "od" ? /(\bod\b|overdraft)/ : new RegExp(`\\b${metric}\\b`);
+    for (let c = 0; c < labels.length; c += 1) {
+      const label = labels[c];
+      if (c === stateCol || !aliases.test(label)) continue;
+      const hasDays = /\bdays?\b/.test(label);
+      const hasAvg = /avg|average|amount|rs|cr|crore|utilisation|utilization/.test(label);
+      if (kind === "days" && hasDays) return c;
+      if (kind === "avg" && !hasDays && hasAvg) return c;
+    }
+    return null;
+  };
+
+  return {
+    sdfAvg: findCol("sdf", "avg") ?? stateCol + 1,
+    sdfDays: findCol("sdf", "days") ?? stateCol + 2,
+    wmaAvg: findCol("wma", "avg") ?? stateCol + 3,
+    wmaDays: findCol("wma", "days") ?? stateCol + 4,
+    odAvg: findCol("od", "avg") ?? stateCol + 5,
+    odDays: findCol("od", "days") ?? stateCol + 6,
+  };
+}
+
 function parseFactSheet(sheetName, rows) {
   const monthMatch = sheetName.match(/^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\d{4})$/i);
   const fyMatch = sheetName.match(/^FY(\d{4})-(\d{2})$/i);
@@ -152,17 +247,22 @@ function parseFactSheet(sheetName, rows) {
     financialYear = period;
   }
 
+  const { col: stateCol, count: stateCount } = detectStateColumn(rows);
+  if (stateCount <= 0) return [];
+  const dataStart = findFirstDataRow(rows, stateCol);
+  const cols = detectMetricColumns(rows, stateCol, dataStart);
+
   const parsed = [];
-  for (const row of rows.slice(4)) {
-    const st = normalizeStateName(row[0]);
+  for (const row of rows.slice(dataStart)) {
+    const st = normalizeStateName(row[stateCol]);
     if (INVALID_LABELS.has(st.toLowerCase())) continue;
     if (!VALID_STATES.has(st)) continue;
-    const sdfAvg = cleanNum(row[1]);
-    const sdfDays = cleanNum(row[2]);
-    const wmaAvg = cleanNum(row[3]);
-    const wmaDays = cleanNum(row[4]);
-    const odAvg = cleanNum(row[5]);
-    const odDays = cleanNum(row[6]);
+    const sdfAvg = cleanNum(row[cols.sdfAvg]);
+    const sdfDays = cleanNum(row[cols.sdfDays]);
+    const wmaAvg = cleanNum(row[cols.wmaAvg]);
+    const wmaDays = cleanNum(row[cols.wmaDays]);
+    const odAvg = cleanNum(row[cols.odAvg]);
+    const odDays = cleanNum(row[cols.odDays]);
     parsed.push({
       state: st, sdf_avg: sdfAvg, sdf_days: sdfDays, wma_avg: wmaAvg, wma_days: wmaDays, od_avg: odAvg, od_days: odDays,
       total_avg: sdfAvg + wmaAvg + odAvg,
@@ -551,7 +651,12 @@ function clearMap(message) {
 function geoStateName(feature) {
   const p = feature.properties || {};
   const raw = p.ST_NM || p.NAME_1 || p.name || p.NAME || p.state || p.State_Name || p.ST_NAME || p.DISTRICT || "";
-  return normalizeStateName(String(raw).replace(/^State of\s+/i, "").replace(/^NCT of\s+/i, "NCT of ").trim());
+  let name = String(raw).replace(/^State of\s+/i, "").replace(/^NCT of\s+/i, "NCT of ").trim();
+  name = normalizeStateName(name);
+  // GeoJSON sources use different spellings for some UT/state labels.
+  if (name === "Delhi") return "Delhi";
+  if (name === "Odisha") return "Odisha";
+  return name;
 }
 
 function selectedFyRows() {
