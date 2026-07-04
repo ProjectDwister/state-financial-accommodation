@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>State Limits & Utilization Chatbot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="bg-orb orb-one"></div>
+  <div class="bg-orb orb-two"></div>
+  <div class="bg-grid"></div>
+
+  <main class="app-shell">
+    <nav class="topbar" aria-label="Top navigation">
+      <div class="brand">
+        <div class="brand-mark">₹</div>
+        <div>
+          <strong>RBI State Liquidity</strong>
+          <span>Limits & utilisation intelligence</span>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="themeBtn" class="icon-btn" type="button" title="Toggle theme">☾</button>
+        <button id="refreshBtn" class="refresh-btn" type="button"><span>↻</span> Refresh data</button>
+      </div>
+    </nav>
+
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow"><span class="pulse-dot"></span> Live RBI dataset</div>
+        <h1>Ask questions on State liquidity utilisation.</h1>
+        <p>Query SDF, WMA, Overdraft, monthly trends, financial-year rankings and state-wise comparisons from the latest available RBI data.</p>
+        <div class="hero-actions" aria-label="Example questions">
+          <button class="suggestion" type="button">Top 10 SDF in FY2025-26</button>
+          <button class="suggestion" type="button">Yearly OD trend for Odisha</button>
+          <button class="suggestion" type="button">Compare Maharashtra and Telangana in Apr 2026</button>
+        </div>
+      </div>
+      <aside class="insight-card">
+        <span>Quick insight</span>
+        <strong id="quickInsight">Loading latest observations...</strong>
+        <p id="quickInsightSub">The dashboard will refresh after the source is loaded.</p>
+      </aside>
+    </section>
+
+    <section class="metrics" aria-label="Loaded data summary">
+      <div class="metric accent-card">
+        <span>Source</span>
+        <strong id="sourceMetric">Live RBI source</strong>
+      </div>
+      <div class="metric">
+        <span>Latest month</span>
+        <strong id="latestMonth">Loading...</strong>
+      </div>
+      <div class="metric">
+        <span>Latest FY</span>
+        <strong id="latestFy">Loading...</strong>
+      </div>
+      <div class="metric">
+        <span>States / UTs</span>
+        <strong id="stateCount">Loading...</strong>
+      </div>
+    </section>
+
+    <details class="details">
+      <summary><span>Loaded workbook details</span><em>View status</em></summary>
+      <div id="detailsText">Loading live data...</div>
+    </details>
+
+    <section class="chat-panel">
+      <section id="chat" class="chat" aria-live="polite">
+        <div class="message assistant">
+          <div class="avatar">🤖</div>
+          <div class="bubble">
+            <strong>Ready when the data loads.</strong><br>
+            Ask about state-wise SDF, WMA, Overdraft utilisation, days, rankings, top/bottom states or trends.
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <form id="questionForm" class="composer">
+      <input id="questionInput" type="text" autocomplete="off" placeholder="Ask a question about the RBI data" />
+      <button type="submit" aria-label="Send">↑</button>
+    </form>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
