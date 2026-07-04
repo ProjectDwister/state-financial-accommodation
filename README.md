@@ -1,17 +1,24 @@
-# RBI State Liquidity Chatbot - GitHub Pages
+# RBI State Liquidity Webpage
 
-Static GitHub Pages version of the RBI State Limits & Utilization chatbot.
+Static GitHub Pages app for asking questions about RBI State liquidity utilisation data.
 
 ## Files
 
-- `index.html` - page structure
-- `styles.css` - modern responsive UI
-- `app.js` - data loading and question logic
+- `index.html`
+- `styles.css`
+- `app.js`
+- `README.md`
 
 ## Deploy
 
-Upload these files to the root of a GitHub repository and enable GitHub Pages:
+Upload these files to the root of your GitHub Pages repository.
 
-Settings -> Pages -> Deploy from a branch -> main -> root
+The webpage now includes:
 
-The visible app does not mention the underlying spreadsheet source. It presents the data as a live RBI dataset.
+- Loading progress taskbar from 0% to 100%
+- Chat input disabled until background data is fully loaded
+- Interactive India State/UT map
+- Financial-year dropdown for the map
+- Hover card showing SDF, WMA and Overdraft utilisation for the selected FY
+
+The page reads the live RBI source configured in `app.js`.

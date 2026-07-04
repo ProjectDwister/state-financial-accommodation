@@ -1,7 +1,7 @@
 const CONFIG = {
   sheetId: "13j4zLWkBqNhceu3ytC4gQ_E1-5Sp27p0Q5s6r1UVix0",
   firstMonth: { year: 2017, month: 9 },
-  extraFutureMonths: 3,
+  extraFutureMonths: 18,
   extraFutureFys: 1,
 };
 
@@ -39,7 +39,7 @@ const STATE_ALIASES = new Map(Object.entries({
 }));
 
 const INVALID_LABELS = new Set(["", "nan", "none", "state / ut", "state/ut", "state", "states", "total", "grand total", "all india", "all states", "subtotal", "sub total"]);
-const state = { fact: [], rankings: [], loadedSheets: [], loading: false };
+const state = { fact: [], rankings: [], loadedSheets: [], loading: false, geojson: null, selectedFy: null };
 
 function normalizeStateName(value) {
   let s = String(value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -79,7 +79,8 @@ function sheetRowsFromGviz(table) {
 
 function jsonpSheet(sheetName) {
   const callback = `__gviz_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-  const url = `https://docs.google.com/spreadsheets/d/${CONFIG.sheetId}/gviz/tq?tqx=responseHandler:${callback}&sheet=${encodeURIComponent(sheetName)}&tq=${encodeURIComponent("select *")}`;
+  const cacheBust = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const url = `https://docs.google.com/spreadsheets/d/${CONFIG.sheetId}/gviz/tq?tqx=responseHandler:${callback}&sheet=${encodeURIComponent(sheetName)}&tq=${encodeURIComponent("select *")}&cache_bust=${cacheBust}`;
   return new Promise(resolve => {
     const script = document.createElement("script");
     let done = false;
@@ -201,11 +202,21 @@ function parseRankings(rows) {
 async function loadData() {
   if (state.loading) return;
   state.loading = true;
+  setChatEnabled(false);
   document.getElementById("refreshBtn")?.classList.add("loading");
-  setStatus("Loading live data...");
+  setProgress(0, "Preparing to load RBI data...", "The chat field will unlock after the background data is fully loaded.");
+  clearMap("Map will load after RBI data is prepared...");
   try {
     const tabs = [...candidateMonthlyTabs(), ...candidateFyTabs(), "Rankings"];
-    const results = await Promise.all(tabs.map(t => jsonpSheet(t)));
+    let completed = 0;
+    const results = await Promise.all(tabs.map(async t => {
+      const res = await jsonpSheet(t);
+      completed += 1;
+      const pct = Math.max(4, Math.min(82, Math.round((completed / tabs.length) * 82)));
+      setProgress(pct, `Loading RBI data... ${completed} of ${tabs.length} tabs checked`, "Please keep this page open while the background data is prepared.");
+      return res;
+    }));
+
     const fact = [];
     let rankings = [];
     const loaded = [];
@@ -221,17 +232,55 @@ async function loadData() {
       }
     }
     if (!fact.length) throw new Error("No usable monthly or FY tables were found. Check source sharing and tab names.");
+
     state.fact = fact;
     state.rankings = rankings;
     state.loadedSheets = loaded.concat(rankings.length ? ["Rankings"] : []);
     updateMetrics();
-    setStatus(`Loaded ${state.loadedSheets.length} relevant tabs. Parsed ${state.fact.length.toLocaleString("en-IN")} rows.`);
+    populateFySelect();
+
+    setProgress(88, "RBI data loaded. Preparing India map...", `Loaded ${state.loadedSheets.length} relevant tabs. Latest monthly period: ${latestMonthPeriod() || "-"}.`);
+    await ensureIndiaMap();
+    renderIndiaMap();
+
+    setProgress(100, "Ready — RBI data is loaded", `Latest monthly period: ${latestMonthPeriod() || "-"}. You can now ask questions or use the map.`);
+    setChatEnabled(true);
   } catch (err) {
-    setStatus(`<span class="error">Could not load data: ${err.message}</span>`);
+    setProgress(0, "Could not load RBI data", err.message, true);
+    setChatEnabled(false);
   } finally {
     state.loading = false;
     document.getElementById("refreshBtn")?.classList.remove("loading");
   }
+}
+
+function setProgress(percent, title, hint, isError = false) {
+  const pct = Math.max(0, Math.min(100, Math.round(percent || 0)));
+  const bar = document.getElementById("progressBar");
+  const pctEl = document.getElementById("loadPct");
+  const textEl = document.getElementById("loadStatusText");
+  const hintEl = document.getElementById("loadHint");
+  if (bar) bar.style.width = `${pct}%`;
+  if (pctEl) pctEl.textContent = `${pct}%`;
+  if (textEl) {
+    textEl.textContent = title || "Loading...";
+    textEl.classList.toggle("error", Boolean(isError));
+  }
+  if (hintEl) hintEl.textContent = hint || "";
+}
+
+function setChatEnabled(enabled) {
+  const input = document.getElementById("questionInput");
+  const send = document.getElementById("sendBtn");
+  if (input) {
+    input.disabled = !enabled;
+    input.placeholder = enabled ? "Ask a question about the RBI data" : "Loading RBI data...";
+  }
+  if (send) send.disabled = !enabled;
+}
+
+function setStatus(html) {
+  setProgress(state.fact.length ? 100 : 0, "RBI data status", String(html || ""));
 }
 
 function updateMetrics() {
@@ -244,15 +293,8 @@ function updateMetrics() {
   document.getElementById("latestMonth").textContent = latestMonth;
   document.getElementById("latestFy").textContent = latestFy;
   document.getElementById("stateCount").textContent = latestStates;
-
-  const leader = latestRows.slice().sort((a, b) => b.total_avg - a.total_avg)[0];
-  if (leader) {
-    document.getElementById("quickInsight").textContent = `${leader.state} leads in ${latestMonth}`;
-    document.getElementById("quickInsightSub").textContent = `Highest total average utilisation: ₹${fmtNum(leader.total_avg)} Cr.`;
-  }
 }
 
-function setStatus(html) { document.getElementById("detailsText").innerHTML = html; }
 function availableStates() { return [...new Set(state.fact.map(r => r.state))].sort(); }
 
 function findStates(question) {
@@ -455,6 +497,136 @@ function addMessage(role, content, table) {
   chat.appendChild(div);
   window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
 }
+
+
+function populateFySelect() {
+  const select = document.getElementById("fySelect");
+  if (!select) return;
+  const fys = [...new Set(state.fact.filter(r => r.period_type === "FY").map(r => r.period))]
+    .sort((a, b) => (fySortDate(a) || 0) - (fySortDate(b) || 0));
+  select.innerHTML = "";
+  for (const fy of fys) {
+    const opt = document.createElement("option");
+    opt.value = fy;
+    opt.textContent = fy;
+    select.appendChild(opt);
+  }
+  state.selectedFy = fys.at(-1) || null;
+  if (state.selectedFy) select.value = state.selectedFy;
+  select.disabled = !state.selectedFy;
+}
+
+async function ensureIndiaMap() {
+  if (state.geojson) return state.geojson;
+  if (!window.d3) {
+    clearMap("The map library did not load. Please refresh the page.");
+    return null;
+  }
+  const urls = [
+    "https://cdn.jsdelivr.net/gh/geohacker/india@master/state/india_state.geojson",
+    "https://raw.githubusercontent.com/geohacker/india/master/state/india_state.geojson"
+  ];
+  for (const url of urls) {
+    try {
+      const res = await fetch(`${url}?v=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) continue;
+      const geo = await res.json();
+      if (geo && geo.features && geo.features.length) {
+        state.geojson = geo;
+        return geo;
+      }
+    } catch (err) {
+      // Try the next source.
+    }
+  }
+  clearMap("Could not load the India map. The chat still works.");
+  return null;
+}
+
+function clearMap(message) {
+  const el = document.getElementById("indiaMap");
+  if (el) el.innerHTML = `<div class="map-loading">${escapeHtml(message)}</div>`;
+}
+
+function geoStateName(feature) {
+  const p = feature.properties || {};
+  const raw = p.ST_NM || p.NAME_1 || p.name || p.NAME || p.state || p.State_Name || p.ST_NAME || p.DISTRICT || "";
+  return normalizeStateName(String(raw).replace(/^State of\s+/i, "").replace(/^NCT of\s+/i, "NCT of ").trim());
+}
+
+function selectedFyRows() {
+  const fy = state.selectedFy || document.getElementById("fySelect")?.value;
+  return state.fact.filter(r => r.period_type === "FY" && r.period === fy);
+}
+
+function renderIndiaMap() {
+  const el = document.getElementById("indiaMap");
+  if (!el || !state.geojson || !window.d3) return;
+  const rows = selectedFyRows();
+  const byState = new Map(rows.map(r => [r.state, r]));
+  const width = Math.max(520, el.clientWidth || 720);
+  const height = Math.max(520, el.clientHeight || 560);
+  const maxTotal = Math.max(1, ...rows.map(r => r.total_avg || 0));
+  const color = d3.scaleLinear().domain([0, maxTotal * 0.5, maxTotal]).range(["#eef2ff", "#ffb86b", "#ff4d57"]);
+  const projection = d3.geoMercator().fitSize([width - 34, height - 34], state.geojson);
+  const path = d3.geoPath(projection);
+
+  el.innerHTML = "";
+  const svg = d3.select(el).append("svg")
+    .attr("viewBox", `0 0 ${width} ${height}`)
+    .attr("preserveAspectRatio", "xMidYMid meet");
+  const g = svg.append("g").attr("transform", "translate(17,17)");
+
+  g.selectAll("path")
+    .data(state.geojson.features)
+    .join("path")
+    .attr("class", "map-region")
+    .attr("d", path)
+    .attr("fill", feature => {
+      const rec = byState.get(geoStateName(feature));
+      return rec ? color(rec.total_avg || 0) : "#dfe5ef";
+    })
+    .on("mouseenter", function(event, feature) {
+      d3.select(this).raise();
+      showMapInfo(geoStateName(feature), byState.get(geoStateName(feature)) || null);
+    })
+    .on("focus", function(event, feature) {
+      showMapInfo(geoStateName(feature), byState.get(geoStateName(feature)) || null);
+    });
+
+  showMapInfo(null, null);
+}
+
+function showMapInfo(name, rec) {
+  const info = document.getElementById("mapInfo");
+  if (!info) return;
+  const fy = state.selectedFy || document.getElementById("fySelect")?.value || "selected FY";
+  if (!name) {
+    info.innerHTML = `<span>${escapeHtml(fy)}</span><strong>Hover over a State / UT</strong><p>SDF, WMA and OD values are shown for the selected financial year where available.</p>`;
+    return;
+  }
+  if (!rec) {
+    info.innerHTML = `<span>${escapeHtml(fy)}</span><strong>${escapeHtml(name)}</strong><p>No FY utilisation row was found for this State / UT in the selected year.</p>`;
+    return;
+  }
+  info.innerHTML = `
+    <span>${escapeHtml(fy)}</span>
+    <strong>${escapeHtml(rec.state)}</strong>
+    <p>Average utilisation during the selected financial year.</p>
+    <div class="map-stat"><b>SDF</b><em>₹${fmtNum(rec.sdf_avg)} Cr</em></div>
+    <div class="map-stat"><b>WMA</b><em>₹${fmtNum(rec.wma_avg)} Cr</em></div>
+    <div class="map-stat"><b>Overdraft</b><em>₹${fmtNum(rec.od_avg)} Cr</em></div>
+  `;
+}
+
+window.addEventListener("resize", () => {
+  if (state.geojson && state.fact.length) window.requestAnimationFrame(renderIndiaMap);
+});
+
+document.getElementById("fySelect")?.addEventListener("change", evt => {
+  state.selectedFy = evt.target.value;
+  renderIndiaMap();
+});
 
 document.getElementById("questionForm").addEventListener("submit", async evt => {
   evt.preventDefault();

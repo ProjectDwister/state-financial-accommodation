@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 </head>
 <body>
   <div class="bg-orb orb-one"></div>
@@ -40,11 +41,6 @@
           <button class="suggestion" type="button">Compare Maharashtra and Telangana in Apr 2026</button>
         </div>
       </div>
-      <aside class="insight-card">
-        <span>Quick insight</span>
-        <strong id="quickInsight">Loading latest observations...</strong>
-        <p id="quickInsightSub">The dashboard will refresh after the source is loaded.</p>
-      </aside>
     </section>
 
     <section class="metrics" aria-label="Loaded data summary">
@@ -66,10 +62,41 @@
       </div>
     </section>
 
-    <details class="details">
-      <summary><span>Loaded workbook details</span><em>View status</em></summary>
-      <div id="detailsText">Loading live data...</div>
-    </details>
+    <section class="load-status" aria-label="Data loading status">
+      <div class="load-header">
+        <div>
+          <span class="section-kicker">Data preparation</span>
+          <strong id="loadStatusText">Preparing to load RBI data...</strong>
+        </div>
+        <strong id="loadPct">0%</strong>
+      </div>
+      <div class="progress-track" aria-hidden="true"><div id="progressBar" class="progress-bar"></div></div>
+      <p id="loadHint">The chat field will unlock after the background data is fully loaded.</p>
+    </section>
+
+    <section class="map-section" aria-label="India state and union territory map">
+      <div class="section-head">
+        <div>
+          <span class="section-kicker">Interactive map</span>
+          <h2>State-wise FY utilisation</h2>
+          <p>Select a financial year and hover over a State / UT to view SDF, WMA and Overdraft utilisation.</p>
+        </div>
+        <label class="fy-picker">
+          <span>Financial Year</span>
+          <select id="fySelect" disabled>
+            <option>Loading...</option>
+          </select>
+        </label>
+      </div>
+      <div class="map-grid">
+        <div id="indiaMap" class="india-map" role="img" aria-label="India map"></div>
+        <aside id="mapInfo" class="map-info">
+          <span>Hover over a State / UT</span>
+          <strong>FY utilisation details will appear here.</strong>
+          <p>SDF, WMA and OD values are shown for the selected financial year where available.</p>
+        </aside>
+      </div>
+    </section>
 
     <section class="chat-panel">
       <section id="chat" class="chat" aria-live="polite">
@@ -84,8 +111,8 @@
     </section>
 
     <form id="questionForm" class="composer">
-      <input id="questionInput" type="text" autocomplete="off" placeholder="Ask a question about the RBI data" />
-      <button type="submit" aria-label="Send">↑</button>
+      <input id="questionInput" type="text" autocomplete="off" placeholder="Loading RBI data..." disabled />
+      <button id="sendBtn" type="submit" aria-label="Send" disabled>↑</button>
     </form>
   </main>
 
