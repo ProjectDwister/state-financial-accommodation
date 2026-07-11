@@ -27,3 +27,4 @@ The page reads the live RBI source configured in `app.js`.
 ## v6 map fix
 
 The India map now uses a current State/UT GeoJSON source that separates Telangana from Andhra Pradesh. The app rejects outdated boundary files that do not include Telangana.
+ 
