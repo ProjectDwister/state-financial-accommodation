@@ -466,7 +466,11 @@ function renderTabs(){
     `<button data-fy="${fy}" class="${fy===currentFY?'active':''}">${fy}</button>`
   ).join('');
   el.querySelectorAll('button').forEach(b=>{
-    b.addEventListener('click', ()=>{ currentFY=b.dataset.fy; renderTabs(); render(); });
+    b.addEventListener('click', ()=>{
+      currentFY=b.dataset.fy; renderTabs(); render();
+      ensureWmaUtilForFy(currentFY); // prefetch so map hover has data ready
+      if(document.getElementById('view-wma-limits').style.display !== 'none') renderWmaLimits();
+    });
   });
 }
 
@@ -521,9 +525,15 @@ function initMap(){
       const rect = document.getElementById('map-svg').closest('.map-card').getBoundingClientRect();
       const rowData = d._rowData;
       if(!rowData){ tooltip.style.opacity = 0; return; }
+      const utilInfo = (WMA_UTIL_CACHE[currentFY] || {})[rowData.state];
+      let wmaUtilStr = '';
+      if(utilInfo){
+        if(utilInfo.wmaLimit === null) wmaUtilStr = ' <span style="color:#B8C0CA">(no facility)</span>';
+        else if(utilInfo.wmaUtilPct !== null) wmaUtilStr = ' (' + utilInfo.wmaUtilPct.toFixed(1) + '%)';
+      }
       tooltip.innerHTML = `<span class="tt-state">${d.properties.st_nm}</span>` +
         `<div class="tt-row"><span>SDF</span><span>${fmt(rowData.sdf)}</span></div>` +
-        `<div class="tt-row"><span>WMA</span><span>${fmt(rowData.wma)}</span></div>` +
+        `<div class="tt-row"><span>WMA</span><span>${fmt(rowData.wma)}${wmaUtilStr}</span></div>` +
         `<div class="tt-row"><span>OD</span><span>${fmt(rowData.od)}</span></div>` +
         `<div class="tt-row"><span>Weighted total</span><span>${fmt(rowData.total)}</span></div>` +
         `<div class="tt-row"><span>Rank</span><span>${rowData.rank}</span></div>`;
@@ -612,46 +622,52 @@ document.querySelectorAll('.view-switch-btn').forEach(btn => {
   });
 });
 
-function ensureWmaData(){
-  if(chatRows.length){ renderWmaLimits(); return; }
-  const note = document.getElementById('wma-placeholder');
-  note.querySelector('p').textContent = 'Loading live data from the sheet\u2026';
-  loadChatData().then(() => {
-    if(chatRows.length) renderWmaLimits();
-    else note.querySelector('p').textContent = 'Could not load live sheet data \u2014 it may not be shared publicly.';
-  });
+async function ensureWmaData(){
+  renderWmaLimits();
 }
 
-function renderWmaLimits(){
-  const fy = currentFY || (chatFyList && chatFyList[0]);
-  const rows = chatRows.filter(r => r.fy === fy);
-  if(!fy || !rows.length){
-    document.getElementById('wma-placeholder').style.display = '';
-    document.getElementById('wma-table').style.display = 'none';
-    document.getElementById('wma-placeholder').querySelector('p').textContent =
-      (fy || 'This year') + ' data isn\u2019t in the sheet yet.';
+async function renderWmaLimits(){
+  const fy = currentFY;
+  const placeholder = document.getElementById('wma-placeholder');
+  const table = document.getElementById('wma-table');
+
+  if(!fy){
+    placeholder.style.display = ''; table.style.display = 'none';
+    placeholder.querySelector('p').textContent = 'Loading\u2026';
+    return;
+  }
+  if(!WMA_UTIL_CACHE[fy]){
+    placeholder.style.display = ''; table.style.display = 'none';
+    placeholder.querySelector('p').textContent = 'Loading live data from the sheet\u2026';
+  }
+
+  const utilData = await ensureWmaUtilForFy(fy);
+  // The user may have switched years again while this fetch was still in
+  // flight — don't render stale data for a year they've since navigated
+  // away from.
+  if(fy !== currentFY) return;
+
+  const entries = Object.entries(utilData);
+  if(!entries.length){
+    placeholder.style.display = ''; table.style.display = 'none';
+    placeholder.querySelector('p').textContent =
+      'Could not load ' + fy + ' data \u2014 the sheet may not be shared publicly, or this year isn\u2019t built yet.';
     return;
   }
 
-  const limits = wmaBlendedLimitsForFy(fy);
   const withLimit = [], noFacility = [];
-  for(const r of rows){
-    const L = limits[r.state];
-    if(!L){ noFacility.push(r.state); continue; }
-    withLimit.push({
-      state: r.state, wma: r.wma, limit: L.limit, blended: L.blended, partial: L.partial,
-      pct: L.limit > 0 ? (r.wma / L.limit * 100) : 0
-    });
+  for(const [state, d] of entries){
+    if(d.wmaLimit === null){ noFacility.push(state); continue; }
+    const pct = d.wmaUtilPct !== null ? d.wmaUtilPct : (d.wmaLimit > 0 ? (d.wmaAvg / d.wmaLimit * 100) : 0);
+    withLimit.push({ state, limit: d.wmaLimit, pct });
   }
   withLimit.sort((a,b) => b.pct - a.pct);
 
   const pctColor = pct => pct >= 100 ? 'var(--od)' : pct >= 70 ? 'var(--wma)' : 'var(--sdf)';
 
   let html = withLimit.map(r => {
-    const barPct = Math.min(r.pct, 100).toFixed(1);
-    const flag = r.partial ? ' <span title="Facility only existed for part of this year">*</span>'
-               : r.blended ? ' <span title="Limit changed mid-year; showing a days-weighted average">\u2020</span>' : '';
-    return '<tr><td>'+r.state+flag+'</td><td>'+chatFmt(r.limit)+'</td>' +
+    const barPct = Math.min(Math.max(r.pct, 0), 100).toFixed(1);
+    return '<tr><td>'+r.state+'</td><td>'+chatFmt(r.limit)+'</td>' +
       '<td><div class="wma-bar"><div style="width:'+barPct+'%;background:'+pctColor(r.pct)+'"></div></div></td>' +
       '<td>'+r.pct.toFixed(1)+'%</td></tr>';
   }).join('');
@@ -661,16 +677,11 @@ function renderWmaLimits(){
       'No WMA facility this year: ' + noFacility.join(', ') + '</td></tr>';
   }
 
-  const hasBlended = withLimit.some(r => r.blended);
-  const hasPartial = withLimit.some(r => r.partial);
-  let note = 'Utilization for ' + fy + '.';
-  if(hasBlended) note += ' \u2020 = limit changed mid-year, showing a days-weighted average.';
-  if(hasPartial) note += ' * = facility only existed for part of this year.';
-
   document.getElementById('wma-rows').innerHTML = html;
-  document.querySelector('.wma-sub').textContent = note;
-  document.getElementById('wma-placeholder').style.display = 'none';
-  document.getElementById('wma-table').style.display = '';
+  document.querySelector('.wma-sub').textContent =
+    'Utilization for ' + fy + ' \u2014 limit and any mid-year blending already computed by the pipeline (see that year\u2019s tab footnote for details).';
+  placeholder.style.display = 'none';
+  table.style.display = '';
 }
 
 const EXPAND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>';
@@ -705,6 +716,7 @@ document.addEventListener('keydown', e => {
   currentFY = keys[0];
   renderTabs();
   render();
+  ensureWmaUtilForFy(currentFY); // prefetch so the map's first hover already has data
 })();
 
 // ============================================================
@@ -744,132 +756,43 @@ const CHAT_STATES = [
 // is treated as the final month of the Jun-2024 schedule below, not
 // the first month of the new one — the two schedules are identical for
 // every state except Delhi, so this only affects Delhi's single month.
-const WMA_SCHEDULES = [
-  {
-    label: 'Feb 2016 revision (Sep 2017 \u2013 Mar 2020 in this sheet)',
-    start: [2017, 8], end: [2020, 2], // Sep-2017 to Mar-2020
-    limits: {
-      'Andhra Pradesh': 1510, 'Arunachal Pradesh': 195, 'Assam': 940, 'Bihar': 1420,
-      'Chhattisgarh': 660, 'Goa': 170, 'Gujarat': 1915, 'Haryana': 915, 'Himachal Pradesh': 550,
-      'Jammu & Kashmir': 880, 'Jharkhand': 720, 'Karnataka': 1985, 'Kerala': 1215,
-      'Madhya Pradesh': 1600, 'Maharashtra': 3385, 'Manipur': 195, 'Meghalaya': 175,
-      'Mizoram': 160, 'Nagaland': 205, 'Odisha': 985, 'Punjab': 925, 'Rajasthan': 1630,
-      'Tamil Nadu': 2475, 'Telangana': 1080, 'Tripura': 255, 'Uttar Pradesh': 3550,
-      'Uttarakhand': 505, 'West Bengal': 1895, 'Puducherry': 130
+// WMA Limit + Utilization now comes straight from the Sheet's FY tabs
+// (columns H/I), computed once, authoritatively, by the Python pipeline —
+// no client-side schedule/blending logic duplicated here anymore. One
+// source of truth instead of two that could quietly drift apart.
+const WMA_UTIL_CACHE = {}; // fyKey -> { state: {wmaAvg, wmaLimit, wmaUtilPct} }
+
+async function ensureWmaUtilForFy(fy){
+  if(WMA_UTIL_CACHE[fy]) return WMA_UTIL_CACHE[fy];
+  try{
+    const resp = await fetchSheetJsonp(fy);
+    const rows = (resp.table && resp.table.rows) || [];
+    const result = {};
+    for(const r of rows){
+      const c = r.c || [];
+      const get = i => (c[i] ? (c[i].v ?? '') : '');
+      const state = String(get(0)).trim();
+      // FY tabs have 4 header-ish rows (title/subtitle/group headers/
+      // column headers) before real data — rather than assume a fixed
+      // row offset (fragile if gviz's own header auto-detection ever
+      // behaves differently), only accept rows whose first cell is one
+      // of the 36 known canonical state names.
+      if(!CHAT_STATES.includes(state)) continue;
+      const wmaAvg = Number(get(3)) || 0;
+      const limitRaw = get(7), utilRaw = get(8);
+      result[state] = {
+        wmaAvg,
+        wmaLimit:   (limitRaw === '' || limitRaw === '—') ? null : Number(limitRaw),
+        wmaUtilPct: (utilRaw  === '' || utilRaw  === '—') ? null : Number(utilRaw),
+      };
     }
-  },
-  {
-    label: 'COVID relief, +60% (Apr 2020 \u2013 Mar 2022)',
-    start: [2020, 3], end: [2022, 2], // Apr-2020 to Mar-2022
-    // Per explicit instruction: each state's limit is 60% higher than
-    // the preceding (Feb-2016) schedule. Cross-checked: the resulting
-    // aggregate (₹51,560 Cr) exactly matches the figure the Apr-2022
-    // press release itself cites as the immediately-prior limit.
-    limits: {
-      'Andhra Pradesh': 2416, 'Arunachal Pradesh': 312, 'Assam': 1504, 'Bihar': 2272,
-      'Chhattisgarh': 1056, 'Goa': 272, 'Gujarat': 3064, 'Haryana': 1464, 'Himachal Pradesh': 880,
-      'Jammu & Kashmir': 1408, 'Jharkhand': 1152, 'Karnataka': 3176, 'Kerala': 1944,
-      'Madhya Pradesh': 2560, 'Maharashtra': 5416, 'Manipur': 312, 'Meghalaya': 280,
-      'Mizoram': 256, 'Nagaland': 328, 'Odisha': 1576, 'Punjab': 1480, 'Rajasthan': 2608,
-      'Tamil Nadu': 3960, 'Telangana': 1728, 'Tripura': 408, 'Uttar Pradesh': 5680,
-      'Uttarakhand': 808, 'West Bengal': 3032, 'Puducherry': 208
-    }
-  },
-  {
-    label: 'Apr 2022 \u2013 Jun 2024',
-    start: [2022, 3], end: [2024, 5], // Apr-2022 to Jun-2024
-    limits: {
-      'Andhra Pradesh': 2252, 'Arunachal Pradesh': 285, 'Assam': 1243, 'Bihar': 2272,
-      'Chhattisgarh': 1056, 'Goa': 203, 'Gujarat': 2518, 'Haryana': 1464, 'Himachal Pradesh': 656,
-      'Jammu & Kashmir': 1050, 'Jharkhand': 1067, 'Karnataka': 3137, 'Kerala': 1683,
-      'Madhya Pradesh': 2560, 'Maharashtra': 4686, 'Manipur': 233, 'Meghalaya': 209,
-      'Mizoram': 191, 'Nagaland': 245, 'Odisha': 1576, 'Puducherry': 155, 'Punjab': 1104,
-      'Rajasthan': 2608, 'Tamil Nadu': 3601, 'Telangana': 1728, 'Tripura': 304,
-      'Uttar Pradesh': 5680, 'Uttarakhand': 602, 'West Bengal': 2641
-    }
-  },
-  {
-    label: 'Jul 2024 \u2013 Jan 2026',
-    start: [2024, 6], end: [2026, 0], // Jul-2024 to Jan-2026
-    limits: {
-      'Andhra Pradesh': 2921, 'Arunachal Pradesh': 373, 'Assam': 1716, 'Bihar': 2731,
-      'Chhattisgarh': 1434, 'Goa': 258, 'Gujarat': 3092, 'Haryana': 1803, 'Himachal Pradesh': 777,
-      'Jammu & Kashmir': 1298, 'Jharkhand': 1225, 'Karnataka': 4010, 'Kerala': 2308,
-      'Madhya Pradesh': 3450, 'Maharashtra': 6139, 'Manipur': 281, 'Meghalaya': 267,
-      'Mizoram': 216, 'Nagaland': 276, 'Odisha': 2099, 'Punjab': 1538, 'Rajasthan': 3585,
-      'Tamil Nadu': 4582, 'Telangana': 2407, 'Tripura': 343, 'Uttar Pradesh': 6519,
-      'Uttarakhand': 839, 'West Bengal': 3456, 'Puducherry': 175
-    }
-  },
-  {
-    label: 'Feb 2026 onward',
-    start: [2026, 1], end: null, // Feb-2026, open-ended
-    limits: {
-      'Andhra Pradesh': 2921, 'Arunachal Pradesh': 373, 'Assam': 1716, 'Bihar': 2731,
-      'Chhattisgarh': 1434, 'Delhi': 890, 'Goa': 258, 'Gujarat': 3092, 'Haryana': 1803,
-      'Himachal Pradesh': 777, 'Jammu & Kashmir': 1298, 'Jharkhand': 1225, 'Karnataka': 4010,
-      'Kerala': 2308, 'Madhya Pradesh': 3450, 'Maharashtra': 6139, 'Manipur': 281,
-      'Meghalaya': 267, 'Mizoram': 216, 'Nagaland': 276, 'Odisha': 2099, 'Puducherry': 175,
-      'Punjab': 1538, 'Rajasthan': 3585, 'Tamil Nadu': 4582, 'Telangana': 2407, 'Tripura': 343,
-      'Uttar Pradesh': 6519, 'Uttarakhand': 839, 'West Bengal': 3456
-    }
+    WMA_UTIL_CACHE[fy] = result;
+    return result;
+  } catch(e){
+    console.warn('Could not load WMA utilization for', fy, e.message);
+    WMA_UTIL_CACHE[fy] = {}; // cache the miss too, so hovers don't retry every time
+    return {};
   }
-];
-const WMA_FLOOR_ABS = 2017*12 + 8; // Sep-2017 — matches the sheet's own data floor
-
-function wmaAbsMonth(y, m0){ return y*12 + m0; }
-function wmaDaysInMonth(y, m0){ return new Date(y, m0+1, 0).getDate(); }
-
-function wmaScheduleForMonth(y, m0){
-  const abs = wmaAbsMonth(y, m0);
-  for(const s of WMA_SCHEDULES){
-    const startAbs = wmaAbsMonth(s.start[0], s.start[1]);
-    const endAbs = s.end ? wmaAbsMonth(s.end[0], s.end[1]) : Infinity;
-    if(abs >= startAbs && abs <= endAbs) return s;
-  }
-  return null;
-}
-
-function wmaFyMonths(fyKey){
-  const startYear = parseInt(fyKey.replace('FY','').split('-')[0], 10);
-  const months = [];
-  for(let m=3; m<=11; m++) months.push([startYear, m]);
-  for(let m=0; m<=2; m++) months.push([startYear+1, m]);
-  return months;
-}
-
-// Computes each state's effective limit for one FY. Most years sit
-// entirely within one schedule (a straight lookup); a year spanning a
-// schedule change gets a days-weighted blended limit, matching this
-// project's existing convention for aggregating monthly data into FY
-// figures elsewhere on this page. A state with no facility for the
-// whole year returns null; a state whose facility only existed for
-// part of the year (Delhi, in the one FY that includes both Jan-2026
-// and Feb-2026) is averaged only over the months it had a limit, with
-// that partial coverage flagged for the UI to disclose.
-function wmaBlendedLimitsForFy(fyKey){
-  const months = wmaFyMonths(fyKey).filter(([y,m0]) => wmaAbsMonth(y,m0) >= WMA_FLOOR_ABS);
-  const fyTotalDays = months.reduce((sum,[y,m0]) => sum + wmaDaysInMonth(y,m0), 0);
-  const result = {};
-  for(const state of CHAT_STATES){
-    let sumLimitDays = 0, sumDays = 0;
-    const schedulesUsed = new Set();
-    for(const [y, m0] of months){
-      const sched = wmaScheduleForMonth(y, m0);
-      if(!sched || !(state in sched.limits)) continue;
-      const days = wmaDaysInMonth(y, m0);
-      sumLimitDays += sched.limits[state] * days;
-      sumDays += days;
-      schedulesUsed.add(sched.label);
-    }
-    result[state] = sumDays === 0 ? null : {
-      limit: sumLimitDays / sumDays,
-      blended: schedulesUsed.size > 1,
-      partial: sumDays < fyTotalDays,
-      schedules: [...schedulesUsed]
-    };
-  }
-  return result;
 }
 
 let chatRows = [];
