@@ -149,6 +149,22 @@
   .wma-placeholder strong{color:var(--ink)}
   .wma-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--line);min-width:100px}
 
+  .od-quarter-tabs{display:flex;gap:4px;flex-wrap:wrap;margin:1rem 0 1.25rem}
+  .od-quarter-tabs button{
+    font-family:'IBM Plex Mono',monospace;font-size:11.5px;font-weight:500;
+    border:1px solid var(--line);background:var(--paper-raised);color:var(--ink-soft);
+    padding:6px 11px;border-radius:6px;cursor:pointer;
+  }
+  .od-quarter-tabs button.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .od-quarter-tabs button:hover:not(.active){border-color:var(--accent);color:var(--accent)}
+  .od-status{
+    display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:500;
+    padding:3px 8px;border-radius:5px;
+  }
+  .od-status.ok{background:var(--sdf-soft);color:var(--sdf)}
+  .od-status.approaching{background:var(--wma-soft);color:var(--wma)}
+  .od-status.breached{background:var(--od-soft);color:var(--od)}
+
   .chat-toggle{
     position:fixed;bottom:24px;right:24px;z-index:900;
     width:52px;height:52px;border-radius:50%;border:none;
@@ -242,6 +258,7 @@
   <div class="view-switch" id="view-switch">
     <button class="view-switch-btn active" data-view="rankings" type="button">Rankings</button>
     <button class="view-switch-btn" data-view="wma-limits" type="button">WMA Limits</button>
+    <button class="view-switch-btn" data-view="od-utilization" type="button">OD Utilization</button>
   </div>
 
   <div id="view-rankings">
@@ -312,6 +329,29 @@
       <tbody id="wma-rows"></tbody>
     </table>
     <div class="wma-placeholder" id="wma-placeholder">
+      <p>Switch to this tab to load live data from the sheet.</p>
+    </div>
+  </div>
+
+  <div id="view-od-utilization" style="display:none">
+    <div class="wma-intro">
+      <p class="panel-title">RBI 36-day-per-quarter overdraft cap</p>
+      <p class="wma-sub">How many days each state spent in overdraft, per fiscal quarter (Apr-2022 onward).</p>
+    </div>
+    <div class="od-quarter-tabs" id="od-quarter-tabs"></div>
+    <table id="od-table" style="display:none">
+      <thead>
+        <tr>
+          <th data-key="state">State <span class="arrow">&#9662;</span></th>
+          <th data-key="days">OD Days <span class="arrow">&#9662;</span></th>
+          <th>Utilization</th>
+          <th data-key="pct">% of 36-day cap <span class="arrow">&#9662;</span></th>
+          <th data-key="status">Status <span class="arrow">&#9662;</span></th>
+        </tr>
+      </thead>
+      <tbody id="od-rows"></tbody>
+    </table>
+    <div class="wma-placeholder" id="od-placeholder">
       <p>Switch to this tab to load live data from the sheet.</p>
     </div>
   </div>
@@ -618,7 +658,9 @@ document.querySelectorAll('.view-switch-btn').forEach(btn => {
     const view = btn.dataset.view;
     document.getElementById('view-rankings').style.display = view==='rankings' ? '' : 'none';
     document.getElementById('view-wma-limits').style.display = view==='wma-limits' ? '' : 'none';
+    document.getElementById('view-od-utilization').style.display = view==='od-utilization' ? '' : 'none';
     if(view === 'wma-limits') ensureWmaData();
+    if(view === 'od-utilization') ensureOdData();
   });
 });
 
@@ -683,6 +725,120 @@ async function renderWmaLimits(){
   placeholder.style.display = 'none';
   table.style.display = '';
 }
+
+// ============================================================
+// OD Utilization — reads the dedicated "OD Utilization" sheet
+// tab live via gviz (same pattern as the chat/WMA fetches), an
+// already-long/tidy long-format table (Quarter, State, OD Days,
+// OD Util. %, Status) computed entirely by the Python pipeline —
+// this is a pure display layer, no client-side recomputation.
+// ============================================================
+let odRows = null;          // flat array of {quarter, state, days, pct, status}
+let odQuarterList = [];     // sorted newest-first
+let currentOdQuarter = null;
+
+function odQuarterSortKey(label){
+  const [fyPart, qPart] = label.split(' Q');
+  const fyStart = parseInt(fyPart.replace('FY',''), 10);
+  return fyStart * 10 + parseInt(qPart, 10);
+}
+
+async function loadOdUtilization(){
+  const resp = await fetchSheetJsonp('OD Utilization');
+  const rows = (resp.table && resp.table.rows) || [];
+  const quarterPattern = /^FY\d{4}-\d{2} Q[1-4]$/;
+  const out = [];
+  for(const r of rows){
+    const c = r.c || [];
+    const get = i => (c[i] ? (c[i].v ?? '') : '');
+    const quarter = String(get(0)).trim();
+    if(!quarterPattern.test(quarter)) continue; // skips the header row defensively
+    out.push({
+      quarter, state: String(get(1)).trim(),
+      days: Number(get(2)) || 0,
+      pct: Number(get(3)) || 0,
+      status: String(get(4)).trim(),
+    });
+  }
+  return out;
+}
+
+async function ensureOdData(){
+  const placeholder = document.getElementById('od-placeholder');
+  const table = document.getElementById('od-table');
+  if(odRows){ renderOdQuarterTabs(); renderOdUtilization(currentOdQuarter); return; }
+
+  placeholder.style.display = ''; table.style.display = 'none';
+  placeholder.querySelector('p').textContent = 'Loading live data from the sheet\u2026';
+  try{
+    odRows = await loadOdUtilization();
+    if(!odRows.length) throw new Error('empty');
+    odQuarterList = [...new Set(odRows.map(r => r.quarter))]
+      .sort((a,b) => odQuarterSortKey(b) - odQuarterSortKey(a));
+    currentOdQuarter = odQuarterList[0];
+    renderOdQuarterTabs();
+    renderOdUtilization(currentOdQuarter);
+  } catch(e){
+    placeholder.style.display = '';
+    placeholder.querySelector('p').textContent =
+      'Could not load live sheet data \u2014 it may not be shared publicly, or this tab isn\u2019t built yet.';
+  }
+}
+
+function renderOdQuarterTabs(){
+  const el = document.getElementById('od-quarter-tabs');
+  el.innerHTML = odQuarterList.map(q =>
+    '<button data-q="'+q+'" class="'+(q===currentOdQuarter?'active':'')+'" type="button">'+q+'</button>'
+  ).join('');
+  el.querySelectorAll('button').forEach(b => {
+    b.addEventListener('click', () => {
+      currentOdQuarter = b.dataset.q;
+      renderOdQuarterTabs();
+      renderOdUtilization(currentOdQuarter);
+    });
+  });
+}
+
+function renderOdUtilization(quarter){
+  const rows = odRows.filter(r => r.quarter === quarter).sort((a,b) => b.pct - a.pct);
+  const statusClass = s => s === 'BREACHED' ? 'breached' : s === 'Approaching' ? 'approaching' : 'ok';
+  const barColor = pct => pct >= 100 ? 'var(--od)' : pct >= 70 ? 'var(--wma)' : 'var(--sdf)';
+
+  document.getElementById('od-rows').innerHTML = rows.map(r => {
+    const barPct = Math.min(Math.max(r.pct, 0), 100).toFixed(1);
+    return '<tr><td>'+r.state+'</td><td>'+r.days+'</td>' +
+      '<td><div class="wma-bar"><div style="width:'+barPct+'%;background:'+barColor(r.pct)+'"></div></div></td>' +
+      '<td>'+r.pct.toFixed(1)+'%</td>' +
+      '<td><span class="od-status '+statusClass(r.status)+'">'+r.status+'</span></td></tr>';
+  }).join('');
+
+  document.getElementById('od-placeholder').style.display = 'none';
+  document.getElementById('od-table').style.display = '';
+}
+
+document.getElementById('od-table').querySelectorAll('th[data-key]').forEach(th => {
+  th.addEventListener('click', () => {
+    if(!odRows || !currentOdQuarter) return;
+    const key = th.dataset.key;
+    const rows = odRows.filter(r => r.quarter === currentOdQuarter);
+    const sortFns = {
+      state: (a,b) => a.state.localeCompare(b.state),
+      days:  (a,b) => b.days - a.days,
+      pct:   (a,b) => b.pct - a.pct,
+      status:(a,b) => a.status.localeCompare(b.status),
+    };
+    rows.sort(sortFns[key] || sortFns.pct);
+    const statusClass = s => s === 'BREACHED' ? 'breached' : s === 'Approaching' ? 'approaching' : 'ok';
+    const barColor = pct => pct >= 100 ? 'var(--od)' : pct >= 70 ? 'var(--wma)' : 'var(--sdf)';
+    document.getElementById('od-rows').innerHTML = rows.map(r => {
+      const barPct = Math.min(Math.max(r.pct, 0), 100).toFixed(1);
+      return '<tr><td>'+r.state+'</td><td>'+r.days+'</td>' +
+        '<td><div class="wma-bar"><div style="width:'+barPct+'%;background:'+barColor(r.pct)+'"></div></div></td>' +
+        '<td>'+r.pct.toFixed(1)+'%</td>' +
+        '<td><span class="od-status '+statusClass(r.status)+'">'+r.status+'</span></td></tr>';
+    }).join('');
+  });
+});
 
 const EXPAND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>';
 const COLLAPSE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3v3a2 2 0 0 1-2 2H4m16-5v3a2 2 0 0 0 2 2h-5M4 16h3a2 2 0 0 1 2 2v3m10-5h-3a2 2 0 0 0-2 2v3"/></svg>';
