@@ -79,9 +79,6 @@
   @media (prefers-reduced-motion:no-preference){.map-expand-btn{transition:background .1s,color .1s}}
   #map-svg{width:100%;height:auto;display:block}
   #map-svg path{stroke:#fff;stroke-width:.6;cursor:pointer;transition:opacity .1s}
-  .ne-inset-bg{fill:var(--paper-raised);stroke:var(--line);stroke-width:1.2}
-  .ne-inset-label{font-family:'IBM Plex Mono',monospace;font-size:7px;font-weight:500;fill:var(--ink-faint);letter-spacing:.03em}
-  #map-svg path.inset-path{stroke-width:1}
   #map-svg path:hover{opacity:.75}
   #map-svg path.nodata{fill:var(--nodata)}
   .map-scale{display:flex;align-items:center;gap:8px;margin-top:14px;font-size:11.5px;color:var(--ink-faint);font-family:'IBM Plex Mono',monospace}
@@ -563,41 +560,7 @@ function initMap(){
   const statesFC = topojson.feature(INDIA_TOPOLOGY, INDIA_TOPOLOGY.objects.states);
   const projection = d3.geoMercator().fitSize([640,640], statesFC);
   const pathGen = d3.geoPath().projection(projection);
-  svg.append('g').attr('class','main-map')
-    .selectAll('path').data(statesFC.features).join('path')
-    .attr('class', 'state-path')
-    .attr('d', pathGen);
-
-  // ---- Northeast inset: 8 states that are only a few pixels wide on
-  // the full-India projection, genuinely hard to see or hover. Rendered
-  // as a second, independently-fitted mini-projection in a corner -- a
-  // standard technique in Indian choropleth maps. Shares the
-  // .state-path class with the main map, so the existing coloring,
-  // hover, and highlight logic (all scoped to svg.selectAll('path'))
-  // picks it up automatically -- no changes needed anywhere else.
-  const NE_NAMES = ['Assam','Arunachal Pradesh','Manipur','Meghalaya','Mizoram','Nagaland','Tripura','Sikkim'];
-  const neFeatures = statesFC.features.filter(f => NE_NAMES.some(n => norm(n) === norm(f.properties.st_nm)));
-
-  const INSET_W = 168, INSET_H = 168, INSET_MARGIN = 12, INSET_PAD = 10, LABEL_H = 16;
-  const insetX = 640 - INSET_W - INSET_MARGIN, insetY = INSET_MARGIN;
-  const neProjection = d3.geoMercator().fitSize(
-    [INSET_W - INSET_PAD * 2, INSET_H - LABEL_H - INSET_PAD * 2],
-    { type: 'FeatureCollection', features: neFeatures }
-  );
-  const nePathGen = d3.geoPath().projection(neProjection);
-
-  const insetG = svg.append('g').attr('class', 'ne-inset').attr('transform', `translate(${insetX},${insetY})`);
-  insetG.append('rect')
-    .attr('width', INSET_W).attr('height', INSET_H).attr('rx', 6)
-    .attr('class', 'ne-inset-bg');
-  insetG.append('text')
-    .attr('x', INSET_W / 2).attr('y', 11).attr('text-anchor', 'middle')
-    .attr('class', 'ne-inset-label')
-    .text('NORTHEAST \u00b7 ENLARGED');
-  insetG.append('g').attr('transform', `translate(${INSET_PAD},${LABEL_H + INSET_PAD})`)
-    .selectAll('path').data(neFeatures).join('path')
-    .attr('class', 'state-path inset-path')
-    .attr('d', nePathGen);
+  svg.selectAll('path').data(statesFC.features).join('path').attr('d', pathGen);
 
   const tooltip = document.getElementById('map-tooltip');
   svg.selectAll('path')
