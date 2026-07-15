@@ -79,6 +79,9 @@
   @media (prefers-reduced-motion:no-preference){.map-expand-btn{transition:background .1s,color .1s}}
   #map-svg{width:100%;height:auto;display:block}
   #map-svg path{stroke:#fff;stroke-width:.6;cursor:pointer;transition:opacity .1s}
+  .ne-inset-bg{fill:var(--paper-raised);stroke:var(--line);stroke-width:1.2}
+  .ne-inset-label{font-family:'IBM Plex Mono',monospace;font-size:7px;font-weight:500;fill:var(--ink-faint);letter-spacing:.03em}
+  #map-svg path.inset-path{stroke-width:1}
   #map-svg path:hover{opacity:.75}
   #map-svg path.nodata{fill:var(--nodata)}
   .map-scale{display:flex;align-items:center;gap:8px;margin-top:14px;font-size:11.5px;color:var(--ink-faint);font-family:'IBM Plex Mono',monospace}
@@ -104,6 +107,8 @@
   td{padding:11px 14px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:middle}
   tbody tr:last-child td{border-bottom:none}
   tbody tr:hover{background:var(--paper)}
+  tbody tr.row-highlighted{background:var(--accent-soft)!important}
+  #map-svg path.state-highlighted{stroke:var(--ink);stroke-width:2px}
   .rank-num{font-family:'IBM Plex Mono',monospace;font-weight:500;color:var(--ink-soft)}
   .state-name{font-weight:500}
   .mix-bar{display:flex;height:9px;border-radius:3px;overflow:hidden;background:var(--line);min-width:110px}
@@ -433,6 +438,7 @@ const SDF_WEIGHT = 1, WMA_WEIGHT = 2, OD_WEIGHT = 3;
 
 let DATA = null;
 let usingSample = false;
+let globalMaxTotal = null; // computed once across ALL years, so map color intensity is comparable year-to-year, not just within one year
 
 function computeRanks(rows){
   const sorted = [...rows].sort((a,b)=>b.total-a.total);
@@ -557,14 +563,48 @@ function initMap(){
   const statesFC = topojson.feature(INDIA_TOPOLOGY, INDIA_TOPOLOGY.objects.states);
   const projection = d3.geoMercator().fitSize([640,640], statesFC);
   const pathGen = d3.geoPath().projection(projection);
-  svg.selectAll('path').data(statesFC.features).join('path').attr('d', pathGen);
+  svg.append('g').attr('class','main-map')
+    .selectAll('path').data(statesFC.features).join('path')
+    .attr('class', 'state-path')
+    .attr('d', pathGen);
+
+  // ---- Northeast inset: 8 states that are only a few pixels wide on
+  // the full-India projection, genuinely hard to see or hover. Rendered
+  // as a second, independently-fitted mini-projection in a corner -- a
+  // standard technique in Indian choropleth maps. Shares the
+  // .state-path class with the main map, so the existing coloring,
+  // hover, and highlight logic (all scoped to svg.selectAll('path'))
+  // picks it up automatically -- no changes needed anywhere else.
+  const NE_NAMES = ['Assam','Arunachal Pradesh','Manipur','Meghalaya','Mizoram','Nagaland','Tripura','Sikkim'];
+  const neFeatures = statesFC.features.filter(f => NE_NAMES.some(n => norm(n) === norm(f.properties.st_nm)));
+
+  const INSET_W = 168, INSET_H = 168, INSET_MARGIN = 12, INSET_PAD = 10, LABEL_H = 16;
+  const insetX = 640 - INSET_W - INSET_MARGIN, insetY = INSET_MARGIN;
+  const neProjection = d3.geoMercator().fitSize(
+    [INSET_W - INSET_PAD * 2, INSET_H - LABEL_H - INSET_PAD * 2],
+    { type: 'FeatureCollection', features: neFeatures }
+  );
+  const nePathGen = d3.geoPath().projection(neProjection);
+
+  const insetG = svg.append('g').attr('class', 'ne-inset').attr('transform', `translate(${insetX},${insetY})`);
+  insetG.append('rect')
+    .attr('width', INSET_W).attr('height', INSET_H).attr('rx', 6)
+    .attr('class', 'ne-inset-bg');
+  insetG.append('text')
+    .attr('x', INSET_W / 2).attr('y', 11).attr('text-anchor', 'middle')
+    .attr('class', 'ne-inset-label')
+    .text('NORTHEAST \u00b7 ENLARGED');
+  insetG.append('g').attr('transform', `translate(${INSET_PAD},${LABEL_H + INSET_PAD})`)
+    .selectAll('path').data(neFeatures).join('path')
+    .attr('class', 'state-path inset-path')
+    .attr('d', nePathGen);
 
   const tooltip = document.getElementById('map-tooltip');
   svg.selectAll('path')
     .on('mousemove', function(event, d){
       const rect = document.getElementById('map-svg').closest('.map-card').getBoundingClientRect();
       const rowData = d._rowData;
-      if(!rowData){ tooltip.style.opacity = 0; return; }
+      if(!rowData){ tooltip.style.opacity = 0; highlightTableRow(null); return; }
       const utilInfo = (WMA_UTIL_CACHE[currentFY] || {})[rowData.state];
       let wmaUtilStr = '';
       if(utilInfo){
@@ -580,16 +620,39 @@ function initMap(){
       tooltip.style.left = (event.clientX - rect.left + 14) + 'px';
       tooltip.style.top  = (event.clientY - rect.top + 8) + 'px';
       tooltip.style.opacity = 1;
+      highlightTableRow(rowData.state);
     })
-    .on('mouseleave', function(){ tooltip.style.opacity = 0; });
+    .on('mouseleave', function(){ tooltip.style.opacity = 0; highlightTableRow(null); });
   mapInitialized = true;
 }
+
+// ---- Bidirectional map <-> table highlight linkage ----
+// Map hover -> table row: driven directly from the path's own mousemove
+// handler above. Table row hover -> map: event delegation on the
+// tbody (one listener, survives re-renders on sort/search/FY-switch,
+// unlike per-row listeners which would need re-attaching every time).
+function highlightTableRow(state){
+  document.querySelectorAll('#rows tr.row-highlighted').forEach(tr => tr.classList.remove('row-highlighted'));
+  if(!state) return;
+  const tr = [...document.querySelectorAll('#rows tr[data-state]')].find(el => el.dataset.state === state);
+  if(tr) tr.classList.add('row-highlighted');
+}
+
+function highlightMapState(state){
+  d3.select('#map-svg').selectAll('path')
+    .classed('state-highlighted', d => !!(d._rowData && d._rowData.state === state));
+}
+
+document.getElementById('rows').addEventListener('mouseover', e => {
+  const tr = e.target.closest('tr[data-state]');
+  if(tr) highlightMapState(tr.dataset.state);
+});
+document.getElementById('rows').addEventListener('mouseleave', () => highlightMapState(null));
 
 function updateMap(rows){
   if(!mapInitialized) initMap();
   const byNorm = new Map(rows.map(r => [norm(r.state), r]));
-  const maxTotal = Math.max(...rows.map(r=>r.total)) || 1;
-  const colorScale = d3.scaleSequential(d3.interpolate('#F3E4E1', '#A13D2C')).domain([0, maxTotal]);
+  const colorScale = d3.scaleSequential(d3.interpolate('#F3E4E1', '#A13D2C')).domain([0, globalMaxTotal]);
   d3.select('#map-svg').selectAll('path')
     .each(function(d){ d._rowData = byNorm.get(norm(d.properties.st_nm)); })
     .attr('fill', function(d){ return d._rowData ? colorScale(d._rowData.total) : null; })
@@ -627,7 +690,7 @@ function render(){
     else if(change>0) trendHtml = `<span class="trend up">${upArrow()}${change}</span>`;
     else if(change<0) trendHtml = `<span class="trend down">${downArrow()}${Math.abs(change)}</span>`;
     else trendHtml = `<span class="trend flat">&mdash;</span>`;
-    return `<tr>
+    return `<tr data-state="${r.state}">
       <td class="rank-num">${r.rank}</td>
       <td class="state-name">${r.state}</td>
       <td><div class="mix-bar" title="SDF ${fmt(r.sdf)} &middot; WMA ${fmt(r.wma)} &middot; OD ${fmt(r.od)} (unweighted, per day)">
@@ -867,6 +930,7 @@ document.addEventListener('keydown', e => {
   const result = await loadData();
   DATA = result.data;
   usingSample = result.sample;
+  globalMaxTotal = Math.max(...Object.values(DATA).flat().map(r => r.total)) || 1;
   renderBanner(result.generated);
   const keys = sortFyKeysDesc(Object.keys(DATA));
   currentFY = keys[0];
